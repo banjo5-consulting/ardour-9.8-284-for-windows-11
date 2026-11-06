@@ -1,0 +1,2 @@
+# Bash scripts must keep Unix (LF) line endings, even when cloned with Git for Windows
+*.sh text eol=lf
