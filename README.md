@@ -10,7 +10,7 @@ Scripts that build the [Ardour](https://ardour.org) digital audio workstation fr
 
 ## What you get
 
-- Ardour installed in `C:\Ardour`, starting from a double-click on the `.exe`
+- Ardour installed in `C:\Ardour`, started with a double-click on `C:\Ardour\Start-Ardour.bat`
 - PortAudio built with **ASIO** support (or WASAPI only, if you prefer)
 - Every step logged to a file, and safe to re-run: finished steps are skipped
 
@@ -18,12 +18,14 @@ Scripts that build the [Ardour](https://ardour.org) digital audio workstation fr
 
 | Component | Version |
 |---|---|
-| Ardour | 9.8 development build (`9.8-284`), commit `PASTE-ARDOUR-COMMIT` |
-| PortAudio | commit `PASTE-PORTAUDIO-COMMIT` |
+| Ardour | 9.8 development build (`9.8-284`), commit `704731d2a5468f6f4ca77f9130eb893dc38ec7e9` |
+| PortAudio | commit `1ca0eeedb678c3cca80f3306c474d69a7a4b5278` |
 | FFTW | 3.3.10, MD5 `8ccbf6a5ea78a16dbc3e1306e234cc5c` (checked by the script) |
-| ASIO SDK | PASTE-ASIO-VERSION, SHA-256 `PASTE-ASIO-SHA256` |
-| MSYS2 | MINGW64, GCC 16.2.0, updated PASTE-MSYS2-DATE |
-| Windows | PASTE-WINDOWS-VERSION |
+| ASIO SDK | Steinberg release with files dated 13 October 2025, SHA-256 `d5ebf0c20dd2c5f43771fd0c1418f4b361bf52434ee670097cfa6b3a335e2eca` |
+| MSYS2 | MINGW64, GCC 16.2.0 (Rev4), last full update 27 September 2026 |
+| Windows | Windows 11 |
+
+To check that your ASIO SDK download is the same file, run `sha256sum asiosdk.zip` in the MINGW64 shell and compare. A newer SDK will probably work too, but hasn't been tested.
 
 **Tested so far:** building, launching, and recording and playing back audio through a computer's built-in microphone. **Not yet tested:** an audio interface over ASIO, and the video timeline.
 
@@ -50,7 +52,7 @@ Expect 1–2 hours in total, most of it compiling.
    5. configures, builds and installs Ardour to `C:\Ardour`
    6. writes `C:\Ardour\Start-Ardour.bat` and runs the DLL bundling script
 6. **Check the logs** if anything fails: `C:\share\log.txt` (previous run: `log.prev.txt`) and `C:\share\bundle-log.txt`. A failure names the script line that stopped it.
-7. **Start Ardour** by double-clicking `C:\Ardour\lib\ardour9\ardour-<version>.exe`.
+7. **Start Ardour** by double-clicking `C:\Ardour\Start-Ardour.bat`. It puts MSYS2's libraries first on Windows' search path, so Ardour runs with exactly the libraries it was built against. You can make a desktop shortcut to it.
 8. **For scoring to picture**, add the video tools: download the Windows builds of Harvid and Xjadeo from [x42.github.io](https://x42.github.io) and set their folder in Ardour under **Edit > Preferences > Video**.
 
 After a rebuild or an MSYS2 update, run `bash bundle-ardour-dlls.sh` again.
@@ -61,11 +63,13 @@ These are the problems we hit while turning the [community recipe](https://disco
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `RPC failed; curl 56 Recv failure: Connection reset by peer` or `early EOF` while getting the Ardour source | Ardour's full history is a large download, and the connection dropped | The script retries 3 times. If it still fails, check your connection and run it again; finished steps are skipped |
 | PortAudio build fails at the ASIO step | Steinberg's download link needs a browser; a scripted download saves a web page instead of the zip | Download the SDK in a browser and save it as `asiosdk.zip` in the build folder (step 3) |
 | `undefined reference to regcomp`, `regexec`, `regfree` when linking `libportaudio.dll` | PortAudio's JACK support needs a POSIX regex library that MSYS2 doesn't link by default | Build PortAudio with `-DPA_USE_JACK=OFF` (Ardour has its own JACK backend) and as a static library (`-DBUILD_SHARED_LIBS=OFF`), which Ardour's build expects |
 | Python `IndentationError` in `libs/backends/portaudio/wscript` during configure | The forum recipe's `sed` patches are now part of Ardour's own code; applying them again adds duplicate, mis-indented lines | Don't apply the patches. If an earlier run did, restore the files with `git checkout` (the script does this) |
 | *(Would have broken the compile)* | The recipe's other patches insert `#if` lines at fixed line numbers in `pbd.cc` and `main.cc`, which now land on unrelated lines | Removed along with the patches above |
-| Starting the `.exe` shows "libcairo-2.dll / libcurl-4.dll / libcairomm-1.0-1.dll / libfftw3f-3.dll was not found" | The build links against DLLs in `C:\msys64\mingw64\bin`, which isn't on Windows' search path | `bundle-ardour-dlls.sh` copies the required DLLs (133 in our build) next to the `.exe`; `Start-Ardour.bat` is a fallback launcher |
+| Starting the `.exe` shows "libcairo-2.dll / libcurl-4.dll / libcairomm-1.0-1.dll / libfftw3f-3.dll was not found" | The build links against DLLs in `C:\msys64\mingw64\bin`, which isn't on Windows' search path | Start Ardour with `Start-Ardour.bat`, which adds that folder to the search path. `bundle-ardour-dlls.sh` also copies the required DLLs (133 in our build) next to the `.exe` |
+| Starting the `.exe` directly shows "midipp.dll is either not designed to run on Windows or contains an error" | Not fully diagnosed. Seen on the first start after a clean rebuild, even with every bundled DLL in place | Start Ardour once with `Start-Ardour.bat`. After that, the `.exe` also starts directly |
 | Bundling reports "not found" DLLs such as `ardour.dll`, `pbd.dll`, `ytk.dll` | False alarm: `ldd` checks plugins in subfolders and doesn't look in the `.exe`'s folder, where these DLLs already are | The script now only warns about DLLs that exist nowhere in the install |
 
 ## Limitations

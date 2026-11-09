@@ -6,6 +6,7 @@
 #  Based on the community recipe "Building Ardour on Windows using MSYS2"
 #  (discourse.ardour.org/t/building-ardour-on-windows-using-msys2).
 #  This build method is NOT officially supported by the Ardour developers.
+#  Please don't ask them for help with it.
 #
 #  ---------------------------------------------------------------------------
 #  BEFORE RUNNING (one-time, manual):
@@ -13,6 +14,10 @@
 #   2. Open "MSYS2 MINGW64" from the Start menu (not UCRT64, not MSYS)
 #   3. Run:  pacman -Syu     (the window closes; reopen MINGW64)
 #   4. Run:  pacman -Syu     again
+#   5. Download the ASIO SDK in a browser from Steinberg's developer site
+#      (Developers > ASIO SDK) and save it as
+#      C:\msys64\home\<username>\ardour-build\asiosdk.zip
+#      Or skip ASIO (WASAPI only): run with  PA_USE_ASIO=OFF bash build-ardour-msys2.sh
 #
 #  TO RUN:
 #   Copy this file into the MSYS2 home folder of the Windows user who will
@@ -45,12 +50,38 @@ trap 'echo; echo "xx  FAILED at line $LINENO of the script. Full log: $(cygpath 
 
 INSTALL_PREFIX="/c/Ardour"          # Windows: C:\Ardour
 BUILD_DIR="$HOME/ardour-build"      # all sources and build files go here
-FFTW_VERSION="3.3.10"
 JOBS="$(nproc)"
+
+# Exact versions this script was tested with. Newer code may need new fixes,
+# so change these only on purpose (and expect to troubleshoot).
+ARDOUR_REF="704731d2a5468f6f4ca77f9130eb893dc38ec7e9"      # Ardour 9.8-284 (development build after the 9.8 release)
+PORTAUDIO_REF="1ca0eeedb678c3cca80f3306c474d69a7a4b5278"   # PortAudio development version
+FFTW_VERSION="3.3.10"
+FFTW_MD5="8ccbf6a5ea78a16dbc3e1306e234cc5c"   # official checksum from fftw.org
+PA_USE_ASIO="${PA_USE_ASIO:-ON}"         # OFF = build without ASIO (WASAPI only)
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m!!  %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31mxx  %s\033[0m\n' "$*" >&2; exit 1; }
+
+# Clone a repository if needed (retrying, as large downloads can drop),
+# then switch it to the tested version
+checkout_ref() {  # usage: checkout_ref <url> <folder> <commit-or-tag>
+  if [ ! -d "$2" ]; then
+    local try
+    for try in 1 2 3; do
+      git clone "$1" "$2" && break
+      rm -rf "$2"
+      [ "$try" = 3 ] && die "Could not download $2 after 3 tries. Check your internet connection and run the script again."
+      warn "Download of $2 failed (try $try of 3) - retrying in 10 seconds"
+      sleep 10
+    done
+  fi
+  git -C "$2" checkout --quiet "$3" 2>/dev/null \
+    || { git -C "$2" fetch --quiet --tags origin && git -C "$2" checkout --quiet "$3"; } \
+    || die "Could not switch $2 to version $3."
+  echo "$2 is at $(git -C "$2" describe --tags --always)"
+}
 
 # --- Sanity checks -----------------------------------------------------------
 [ "${MSYSTEM:-}" = "MINGW64" ] || die "Run this from the 'MSYS2 MINGW64' shell (current: ${MSYSTEM:-unknown})."
@@ -62,14 +93,15 @@ step "Installing build dependencies with pacman"
 pacman -S --noconfirm --needed git unzip make \
   mingw-w64-x86_64-{toolchain,boost,glib2,glibmm,libsndfile,curl,libarchive,liblo,taglib,vamp-plugin-sdk,rubberband,aubio,cairomm,pangomm,jack2,serd,sord,sratom,lilv,libwebsockets,cmake,ninja,libusb}
 
-# --- Step 3: PortAudio with ASIO ---------------------------------------------
+# --- Step 3: PortAudio (with ASIO unless PA_USE_ASIO=OFF) --------------------
 if [ -f /mingw64/lib/libportaudio.a ] && [ -f "$BUILD_DIR/.portaudio-done" ]; then
   step "PortAudio already built - skipping"
 else
-  step "Building PortAudio with ASIO support"
-  [ -d portaudio ] || git clone https://github.com/PortAudio/portaudio.git
-  if [ ! -d portaudio/asiosdk ]; then
-    curl -L -o asiosdk.zip https://www.steinberg.net/asiosdk
+  step "Building PortAudio (ASIO: $PA_USE_ASIO)"
+  checkout_ref https://github.com/PortAudio/portaudio.git portaudio "$PORTAUDIO_REF"
+  if [ "$PA_USE_ASIO" = "ON" ] && [ ! -d portaudio/asiosdk ]; then
+    # Steinberg's download needs a browser, so use the zip saved by hand
+    unzip -tq asiosdk.zip >/dev/null 2>&1 || die "asiosdk.zip is missing or not a valid zip. Download the ASIO SDK in a browser from steinberg.net (Developers > ASIO SDK) and save it as $(cygpath -w "$BUILD_DIR")\\asiosdk.zip - or run with PA_USE_ASIO=OFF to build without ASIO."
     rm -rf asiosdk_extract && mkdir asiosdk_extract
     unzip -q asiosdk.zip -d asiosdk_extract
     ASIO_DIR="$(find asiosdk_extract -mindepth 1 -maxdepth 1 -type d | head -n1)"
@@ -79,7 +111,7 @@ else
   fi
   rm -rf portaudio/build && mkdir portaudio/build
   ( cd portaudio/build \
-    && cmake .. -G Ninja -DCMAKE_INSTALL_PREFIX=/mingw64 -DPA_USE_ASIO=ON \
+    && cmake .. -G Ninja -DCMAKE_INSTALL_PREFIX=/mingw64 -DPA_USE_ASIO="$PA_USE_ASIO" \
          -DPA_USE_JACK=OFF -DBUILD_SHARED_LIBS=OFF -DPA_BUILD_SHARED_LIBS=OFF \
     && ninja install )
   touch "$BUILD_DIR/.portaudio-done"
@@ -90,7 +122,9 @@ if [ -f /mingw64/lib/libfftw3f.dll.a ] && [ -f "$BUILD_DIR/.fftw-done" ]; then
   step "FFTW already built - skipping"
 else
   step "Building FFTW $FFTW_VERSION (single precision)"
-  [ -f "fftw-$FFTW_VERSION.tar.gz" ] || curl -LO "https://fftw.org/fftw-$FFTW_VERSION.tar.gz"
+  [ -f "fftw-$FFTW_VERSION.tar.gz" ] || curl -fLO "https://fftw.org/fftw-$FFTW_VERSION.tar.gz"
+  echo "$FFTW_MD5  fftw-$FFTW_VERSION.tar.gz" | md5sum -c --quiet \
+    || die "fftw-$FFTW_VERSION.tar.gz doesn't match the official checksum. Delete it and run again."
   rm -rf "fftw-$FFTW_VERSION" && tar xf "fftw-$FFTW_VERSION.tar.gz"
   ( cd "fftw-$FFTW_VERSION" \
     && ./configure --build=x86_64-pc-msys --host=x86_64-w64-mingw32 --prefix=/mingw64 \
@@ -103,7 +137,7 @@ fi
 
 # --- Step 5: Ardour source ---------------------------------------------------
 step "Getting the Ardour source"
-[ -d ardour ] || git clone https://github.com/Ardour/ardour.git
+checkout_ref https://github.com/Ardour/ardour.git ardour "$ARDOUR_REF"
 cd ardour
 
 # --- Step 6: no patches needed -----------------------------------------------
